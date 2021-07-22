@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from absl import app, flags
 from .attention import SimpleAttention
 from .utils import weight_top_p, trim
-from .projection import SoftAlign
+from .projection import SoftAlign, PipelineAlign
 import pdb
 #_VF = torch._C._VariableFunctions
 EPS = 1e-7
@@ -174,6 +174,8 @@ class Decoder(nn.Module):
         if self.copy:
             if type(self.copy_translation) == SoftAlign:
                 return self.copy_translation(tokens)
+            elif type(self.copy_translation) == PipelineAlign:
+                return self.copy_translation(tokens)
             else:
                 proj = np.zeros(
                     (tokens.shape[0], tokens.shape[1], len(self.vocab)), dtype=np.int64
@@ -271,10 +273,10 @@ class Decoder(nn.Module):
             if FLAGS.debug:
                 pdb.set_trace()
 
-            new_pred = torch.zeros_like(pred)
-            new_pred[:, self.vocab.pad():self.vocab.unk()+1]  -= 99999
-            new_pred[:, self.vocab.eos()] += 99999 # put eos back TODO single step
-            pred = pred + new_pred
+            # new_pred = torch.zeros_like(pred)
+            # new_pred[:, self.vocab.pad():self.vocab.unk()+1]  -= 99999
+            # new_pred[:, self.vocab.eos()] += 99999 # put eos back TODO single step
+            # pred = pred + new_pred
 
             if  t == self.MAXLEN-1: #FIXME: when sampling there is one more extra timestep
                 new_pred = torch.zeros_like(pred)

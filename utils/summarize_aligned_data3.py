@@ -2,6 +2,8 @@ import sys
 from collections import Counter
 import pdb
 import pickle, json
+from tqdm import tqdm
+
 EPS=3 #3
 SPLIT_TOK=" ||| "
 #SPLIT_TOK="\t"
@@ -14,7 +16,7 @@ def main(data_file, aligner_file):
     inputs  = []
     outputs = []
     #with open(aligner_file, "r") as f:
-    for k, line in enumerate(data):
+    for k, line in tqdm(enumerate(data)):
         input, output = line.split(SPLIT_TOK)
         input, output = set(input.strip().split(" ")), set(output.strip().split(" "))
         inputs.append(input)
@@ -29,7 +31,7 @@ def main(data_file, aligner_file):
                 else:
                     inpmap[out] = inpmap[out] + 1
 
-    for i in range(len(inputs)):
+    for i in tqdm(range(len(inputs))):
         input = inputs[i]
         output = outputs[i]
         for k in input:
@@ -42,7 +44,7 @@ def main(data_file, aligner_file):
             #             del word_alignment[k][v]
 
     incoming = {}
-    for (k,mapped) in list(word_alignment.items()):
+    for (k,mapped) in tqdm(list(word_alignment.items())):
         for (v,_) in mapped.items():
             if v in incoming:
                 incoming[v].add(k)
@@ -52,16 +54,16 @@ def main(data_file, aligner_file):
         # if len(word_alignment[k]) == 0:
         #     del word_alignment[k]
     # print(incoming["9"])
-    for (v, inset) in incoming.items():
+    for (v, inset) in tqdm(incoming.items(), desc="Removing less common alignments"):
         if len(inset) > EPS:
             # print(f"common word: v: {v}, inset: {inset}")
             # print("deleting ", v)
             for (k,mapped) in list(word_alignment.items()):
                 if v in mapped:
-                    print(f"since EPS deleting {k}->{v}")
+                    # print(f"since EPS deleting {k}->{v}")
                     del word_alignment[k][v]
 
-    for (v,inset) in incoming.items():
+    for (v,inset) in tqdm(incoming.items(), desc="Removing candidates"):
         if len(inset) > 1:
             candidates = set([e for e in inset])
             for k, line in enumerate(data):
@@ -77,10 +79,10 @@ def main(data_file, aligner_file):
                 wrongs = inset-candidates
                 for t in wrongs:
                     if v in word_alignment[t]:
-                        print(f"in candidates deleting {t}->{v}")
+                        # print(f"in candidates deleting {t}->{v}")
                         del word_alignment[t][v]
 
-    for (k,mapped) in list(word_alignment.items()):
+    for (k,mapped) in tqdm(list(word_alignment.items()), desc="Remove words with no alignments"):
         if len(word_alignment[k]) == 0:
             del word_alignment[k]
         else:

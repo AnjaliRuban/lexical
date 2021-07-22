@@ -1,4 +1,5 @@
 import os
+import sys
 import math
 import random
 import re
@@ -22,7 +23,7 @@ from absl import app, flags
 
 from mutex import Vocab, Mutex, RecordLoss, MultiIter
 from data import encode, encode_io, collate, eval_format, get_fig2_exp
-from src import NoamLR, SoftAlign
+from src import NoamLR, SoftAlign, PipelineAlign
 import hlog
 
 sns.set()
@@ -62,11 +63,13 @@ flags.DEFINE_bool("highdroptest", False, "high drop at test")
 flags.DEFINE_float("highdropvalue", 0.5, "high drop value")
 flags.DEFINE_string("aligner", "", "alignment file by fastalign")
 flags.DEFINE_bool("soft_align", False, "lexicon projection matrix")
+flags.DEFINE_bool("pipeline_align", False, "pipeline alignment lexicon projection matrix")
 flags.DEFINE_bool("geca", False, "use geca files for translate")
 flags.DEFINE_bool("lessdata", False, "0.1 data for translate")
 flags.DEFINE_bool("learn_align", False, "learned lexicon projection matrix")
 flags.DEFINE_float("paug", 0.1, "augmentation ratio")
 flags.DEFINE_string("aug_file", "", "data source for augmentation")
+flags.DEFINE_string("data_file", "", "data source")
 flags.DEFINE_float("soft_temp", 0.2, "2 * temperature for soft lexicon")
 flags.DEFINE_string("tb_dir", "", "tb_dir")
 plt.rcParams['figure.dpi'] = 300
@@ -258,11 +261,13 @@ def swap_io(items):
     return [(y, x) for (x, y) in items]
 
 
-def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, unwanted=lambda x: False, temp=0.02):
+def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, train_x=None, train_y=None, unwanted=lambda x: False, temp=0.02):
     if aligner == "uniform":
         proj = np.ones((len(vocab_x), len(vocab_y)), dtype=np.float32)
     elif aligner == "random":
         proj = np.random.default_rng().random((len(vocab_x), len(vocab_y)), dtype=np.float32)
+    elif FLAGS.pipeline_align:
+        pass
     else:
         proj = np.zeros((len(vocab_x), len(vocab_y)), dtype=np.float32)
 
@@ -293,27 +298,45 @@ def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, unwanted=lambda x: False,
 
     if FLAGS.soft_align:
         return SoftAlign(proj/FLAGS.soft_temp, requires_grad=FLAGS.learn_align).to(DEVICE)
+    elif FLAGS.pipeline_align:
+        align_model = PipelineAlign(len(vocab_x), len(vocab_y)).to(DEVICE)
+        align_model.load_state_dict(torch.load(aligner)["model"])
+        with torch.no_grad():
+            for x, y in zip(train_x, train_y):
+                align_model(x, y)
+        return align_model
     else:
+        print(sys.getsizeof(proj))
         return np.argmax(proj, axis=1)
 
 
 
-def tranlate_with_aligner(aligner, vocab_x, vocab_y, unwanted=lambda x: False, temp=0.02):
-    proj = np.identity(len(vocab_x), dtype=np.float32)
-    vocab_keys = list(vocab_x._contents.keys())
-    with open(aligner, 'r') as handle:
-        word_alignment = json.load(handle)
-        for (w, a) in word_alignment.items():
-            if w in vocab_x and len(a) > 0 and not unwanted(w):
-                x = vocab_keys.index(w)
-                for (v, n) in a.items():
-                    if not unwanted(v) and v in vocab_y:
-                        y = vocab_keys.index(v)
-                        proj[x, y] = 2*n
+def tranlate_with_aligner(aligner, vocab_x, vocab_y, train_x=None, train_y=None, unwanted=lambda x: False, temp=0.02):
+    if FLAGS.pipeline_align:
+        pass
+    else:
+        proj = np.identity(len(vocab_x), dtype=np.float32)
+        vocab_keys = list(vocab_x._contents.keys())
+        with open(aligner, 'r') as handle:
+            word_alignment = json.load(handle)
+            for (w, a) in word_alignment.items():
+                if w in vocab_x and len(a) > 0 and not unwanted(w):
+                    x = vocab_keys.index(w)
+                    for (v, n) in a.items():
+                        if not unwanted(v) and v in vocab_y:
+                            y = vocab_keys.index(v)
+                            proj[x, y] = 2*n
 
     if FLAGS.soft_align:
         return SoftAlign(proj/temp, requires_grad=FLAGS.learn_align).to(DEVICE)
+    elif FLAGS.pipeline_align:
+        aligner = PipelineAlign(len(vocab_x), len(vocab_y)).to(DEVICE)
+        with torch.no_grad():
+            for x, y in zip(train_x, train_y):
+                aligner(x, y)
+        return aligner
     else:
+        print(sys.getsizeof(proj))
         return np.argmax(proj, axis=1)
 
 
@@ -366,9 +389,9 @@ def copy_translation_scan(vocab_x, vocab_y):
             proj[idx, idy] = 1
         return np.argmax(proj, axis=1)
 
-def copy_translation_translate(vocab_x, vocab_y):
+def copy_translation_translate(vocab_x, vocab_y, train_x=None, train_y=None):
     if FLAGS.aligner != "":
-        return tranlate_with_alignerv2(FLAGS.aligner, vocab_x, vocab_y)
+        return tranlate_with_alignerv2(FLAGS.aligner, vocab_x, vocab_y, train_x=train_x, train_y=train_y)
     else:
         proj = np.zeros((len(vocab_x), len(vocab_y)), dtype=np.float32)
         x_keys = list(vocab_x._contents.keys())
@@ -470,14 +493,14 @@ def main(argv):
         for split in ("train", "dev", "test"):
             split_data = []
             if split == "train" and FLAGS.geca:
-                translate_file = f"{ROOT_FOLDER}/TRANSLATE/cmn.txt_{split}_tokenized_geca"
+                translate_file = FLAGS.data_file
             else:
-                translate_file = f"{ROOT_FOLDER}/TRANSLATE/cmn.txt_{split}_tokenized"
+                translate_file = FLAGS.data_file
 
             if FLAGS.lessdata and split == "train":
                 translate_file = translate_file.replace("TRANSLATE", "TRANSLATE/less") + f"_{FLAGS.seed}.tsv"
             else:
-                translate_file = translate_file + ".tsv"
+                translate_file = translate_file
 
             datalines = open(translate_file, "r").readlines()
 
@@ -494,8 +517,8 @@ def main(argv):
 
             data[split] = split_data
 
-        count_x = count_x.most_common(15000)    # threshold to 10k words
-        count_y = count_y.most_common(26000)    # threshold to 10k words
+        count_x = count_x.most_common()    # threshold to 10k words
+        count_y = count_y.most_common()    # threshold to 10k words
 
         for (x, _) in count_x:
             vocab_x.add(x)
@@ -527,7 +550,7 @@ def main(argv):
         val_items = data["dev"]
         test_items = data["test"]
         if FLAGS.copy:
-            copy_translation = copy_translation_translate(vocab_x, vocab_y)
+            copy_translation = copy_translation_translate(vocab_x, vocab_y, train_x=[d[0] for d in train_items], train_y=[d[1] for d in train_items])
         else:
             copy_translation = None
 

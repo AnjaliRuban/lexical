@@ -1,15 +1,16 @@
 train_file=$1
+out_file=$2
 echo $train_file
-train_path=$(dirname $train_file)/alignments/
+train_path=$(dirname $train_file)/alignments/$out_file/
 echo $train_path
 mkdir -p $train_path
 
-python utils/summarize_aligned_data3.py $train_file ${train_path}/simple.align
-python utils/pmi_align.py $train_file ${train_path}/pmi.align
+# python utils/summarize_aligned_data3.py $train_file ${train_path}/simple.align
+# python utils/pmi_align.py $train_file ${train_path}/pmi.align
 
 for flag in "-d" "-o" "-v" "-d -o" "-d -v" "-o -v" "-d -o -v" ""; do
     str_flag="${flag// /}"
-    str_flag="${str_flag//-/}"
+    str_flag="${str_flag// /}"
     fast_align -i $train_file $flag > ${train_path}/forward.align.${str_flag}
     python utils/summarize_aligned_data.py $train_file ${train_path}/forward.align.${str_flag}
 done
