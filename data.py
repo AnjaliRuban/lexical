@@ -17,7 +17,10 @@ def encode(data, vocab_x, vocab_y):
 
 def encode_io(datum, vocab_x, vocab_y):
     inp, out = datum
-    return ([vocab_x.sos()] + vocab_x.encode(inp) + [vocab_x.eos()], [vocab_y.sos()] + vocab_y.encode(out) + [vocab_y.eos()])
+    return ([vocab_x.sos()] + vocab_x.encode(inp, unk=True) + [vocab_x.eos()],
+        [vocab_y.sos()] + vocab_y.encode(out, unk=True) + [vocab_y.eos()],
+        [vocab_x.sos()] + vocab_x.encode(inp, unk=False) + [vocab_x.eos()],
+        [vocab_y.sos()] + vocab_y.encode(out, unk=False) + [vocab_y.eos()],)
 
 def eval_format(vocab, seq):
     if vocab.eos() in seq:
@@ -29,11 +32,13 @@ def collate(batch):
     batch = sorted(batch,
                    key=lambda x: len(x[0]),
                    reverse=True)
-    inp, out = zip(*batch)
-    lens = torch.LongTensor(list(map(len,inp)))
-    inp = batch_seqs(inp)
-    out = batch_seqs(out)
-    return inp, out, lens
+    einp, eout, finp, fout = zip(*batch)
+    lens = torch.LongTensor(list(map(len,einp)))
+    einp = batch_seqs(einp)
+    eout = batch_seqs(eout)
+    finp = batch_seqs(finp)
+    fout = batch_seqs(fout)
+    return einp, eout, finp, fout, lens
 
 def get_fig2_exp(input_symbols, output_symbols):
     study = [(["dax"], ["RED"]),

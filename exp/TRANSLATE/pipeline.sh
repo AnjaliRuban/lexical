@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=fasttranslate
+#SBATCH --job-name=pipelinetranslate
 #SBATCH --time=48:00:00
 #SBATCH --cpus-per-task=5
 #SBATCH --ntasks-per-node=1
@@ -18,8 +18,8 @@ home="../.."
 data="../../.."
 mkdir -p $data/results/$types
 
-python3 -u $home/main.py \
---seed ${i} \
+python -u  $home/main.py \
+--seed $i \
 --n_batch 8 \
 --n_layers 2 \
 --noregularize \
@@ -27,17 +27,19 @@ python3 -u $home/main.py \
 --lr ${lr} \
 --temp 1.0 \
 --dropout 0.4 \
---beam_size 0 \
+--beam_size 5 \
 --gclip 5.0 \
 --accum_count 4 \
 --valid_steps 5000 \
 --warmup_steps ${warmup_steps} \
 --max_step ${max_steps} \
 --tolarance 10 \
+--copy \
 --data_file ${types} \
---save_model $data/results/$types/baseline_model.${i}.pth \
---TRANSLATE > $data/results/$types/baseline_eval.${i}.out
-# --load_model $data/results/$types/baseline_model.${i}.pth \
+--pipeline_align \
+--aligner $data/data_lex/alignments/${types}/pipeline.align.pth \
+--save_model $data/results/$types/pipeline_model.${i}.pth \
+--TRANSLATE > $data/results/$types/pipeline_eval.${i}.out
 # --one_shot \
-# --load_model $data/results/$types/baseline_model.${i}.pth \
-# --TRANSLATE > $data/results/$types/baseline_eval.test.out
+# --TRANSLATE > $data/results/$types/pipeline_eval.test.out
+# --load_model $data/results/$types/pipeline_model.${i}.pth \

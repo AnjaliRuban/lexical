@@ -81,24 +81,29 @@ class EncDec(nn.Module):
 
         return state
 
-    def forward(self, inp, out, lens=None, per_instance=False):
+    def forward(self, inp, out, finp, fout, lens=None, per_instance=False):
         hid, state = self.encoder(inp, lens=lens)
 
         state = self.pass_hiddens(state)
         out_src = out[:-1, :]
+        fout_src = fout[:-1, :]
 
         if self.source_att:
             att_features = [self.proj(hid)]
-            att_tokens   = [inp]
+            att_unk_tokens = [inp]
+            att_full_tokens = [finp]
         else:
             att_features = None
-            att_tokens   = None
+            att_unk_tokens = None
+            att_full_tokens = None
 
         dec, _, _, extras = self.decoder(state,
                                          out_src.shape[0],
-                                         ref_tokens=out_src,
+                                         ref_unk_tokens=out_src,
+                                         ref_full_tokens=fout_src,
                                          att_features=att_features,
-                                         att_tokens=att_tokens)
+                                         att_unk_tokens=att_unk_tokens,
+                                         att_full_tokens=att_full_tokens)
 
         if per_instance:
             out_tgt = out[1:, :].transpose(0,1)
@@ -106,45 +111,55 @@ class EncDec(nn.Module):
             loss = self.nll_wr(output,out_tgt).sum(dim=-1)
         else:
             out_tgt = out[1:, :].view(-1)
-            dec = dec.view(-1, len(self.vocab_y))
+            dec = dec.view(-1, self.vocab_y.full_len())
             loss = self.nll(dec, out_tgt) / inp.shape[1]
 
         return loss
 
-    def logprob(self, inp, out, lens=None):
+    def logprob(self, inp, finp, out, fout, lens=None):
         hid, state = self.encoder(inp, lens=lens)
         if self.source_att:
             att_features = [self.proj(hid)]
-            att_tokens   = [inp]
+            att_unk_tokens   = [inp]
+            att_full_tokens   = [finp]
         else:
             att_features = None
-            att_tokens   = None
+            att_unk_tokens = None
+            att_full_tokens = None
 
         return self.decoder.logprob(out,
+                                    fout,
                                     rnn_state=self.pass_hiddens(state),
                                     att_features=att_features,
-                                    att_tokens=att_tokens)
+                                    att_unk_tokens=att_unk_tokens,
+                                    att_full_tokens=att_full_tokens)
 
-    def logprob_interleaved(self, inp, out, lens=None):
+    def logprob_interleaved(self, inp, out, finp, fout, lens=None):
         hid, state = self.encoder(inp, lens=lens)
         sbatch     = [s.repeat_interleave(out.shape[1],dim=1) for s in self.pass_hiddens(state)]
         outbatch     = out.repeat(1, inp.shape[1])
+        foutbatch     = fout.repeat(1, inp.shape[1])
         if self.source_att:
             att_features = [self.proj(hid).repeat_interleave(out.shape[1],dim=1)]
-            att_tokens   = [inp.repeat_interleave(out.shape[1],dim=1)]
+            att_unk_tokens   = [inp.repeat_interleave(out.shape[1],dim=1)]
+            att_full_tokens   = [inp.repeat_interleave(fout.shape[1],dim=1)]
         else:
             att_features = None
-            att_tokens   = None
+            att_unk_tokens   = None
+            att_full_tokens   = None
         return self.decoder.logprob(outbatch,
+                                    foutbatch,
                                     rnn_state=sbatch,
                                     att_features=att_features,
-                                    att_tokens=att_tokens
+                                    att_unk_tokens=att_unk_tokens,
+                                    att_full_tokens=att_full_tokens,
                                     ).view(inp.shape[1],out.shape[1])
             #xbatch = xps.repeat_interleav(ys.shape[1],1)
 
     def sample(
             self,
             inp,
+            finp,
             max_len,
             lens=None,
             prompt=None,
@@ -170,7 +185,8 @@ class EncDec(nn.Module):
 
         if self.source_att:
             att_features = [self.proj(hid)]
-            att_tokens   = [inp]
+            att_unk_tokens   = [inp]
+            att_full_tokens   = [finp]
         else:
             att_features = None
             att_tokens   = None
@@ -178,7 +194,8 @@ class EncDec(nn.Module):
         return self.decoder.sample(state,
                                    max_len,
                                    att_features=att_features,
-                                   att_tokens=att_tokens,
+                                   att_unk_tokens=att_unk_tokens,
+                                   att_full_tokens=att_full_tokens,
                                    temp=temp,
                                    greedy=greedy,
                                    top_p=top_p,
@@ -186,13 +203,14 @@ class EncDec(nn.Module):
                                    calc_score=calc_score,
                                    )
 
-    def beam(self, inp, beam_size, lens=None):
+    def beam(self, inp, finp, beam_size, lens=None):
         hid, state = self.encoder(inp, lens=lens)
         state = self.pass_hiddens(state)
 
         if self.source_att:
             att_features = [self.proj(hid)]
-            att_tokens   = [inp]
+            att_unk_tokens   = [inp]
+            att_full_tokens   = [finp]
         else:
             att_features = None
             att_tokens   = None

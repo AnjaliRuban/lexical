@@ -67,6 +67,7 @@ flags.DEFINE_bool("pipeline_align", False, "pipeline alignment lexicon projectio
 flags.DEFINE_bool("geca", False, "use geca files for translate")
 flags.DEFINE_bool("lessdata", False, "0.1 data for translate")
 flags.DEFINE_bool("learn_align", False, "learned lexicon projection matrix")
+flags.DEFINE_bool("one_shot", False, "learned lexicon projection matrix")
 flags.DEFINE_float("paug", 0.1, "augmentation ratio")
 flags.DEFINE_string("aug_file", "", "data source for augmentation")
 flags.DEFINE_string("data_file", "", "data source")
@@ -88,7 +89,7 @@ def read_augmented_file(file, vocab_x, vocab_y):
     return edata
 
 
-def train(model, train_dataset, val_dataset, writer=None, references=None):
+def train(model, train_dataset, val_dataset, test_dataset, writer=None, references=None):
     opt = optim.Adam(model.parameters(), lr=FLAGS.lr, betas=(0.9, 0.998))
 
     if FLAGS.lr_schedule:
@@ -125,10 +126,11 @@ def train(model, train_dataset, val_dataset, writer=None, references=None):
         train_loss = train_batches = 0
         opt.zero_grad()
         recorder = RecordLoss()
-        for inp, out, lens in tqdm(train_loader):
+        for inp, out, finp, fout, lens in tqdm(train_loader):
+            torch.cuda.empty_cache()
             if not is_running():
                 break
-            nll = model(inp.to(DEVICE), out.to(DEVICE), lens=lens.to(DEVICE), recorder=recorder)
+            nll = model(inp.to(DEVICE), out.to(DEVICE), finp.to(DEVICE), fout.to(DEVICE), lens=lens.to(DEVICE), recorder=recorder)
             steps += 1
             loss = nll / FLAGS.accum_count
             loss.backward()
@@ -148,13 +150,15 @@ def train(model, train_dataset, val_dataset, writer=None, references=None):
                     scheduler.step()
 
                 if accum_steps % FLAGS.valid_steps == 0:
+                    if not FLAGS.one_shot:
+                        torch.save(model, FLAGS.save_model)
                     with hlog.task(accum_steps):
-                        hlog.value("curr loss", train_loss / train_batches)
+                        hlog.value("val curr loss", train_loss / train_batches)
                         acc, f1, val_loss, bscore = validate(model, val_dataset, writer=writer, references=references)
-                        model.train()
-                        hlog.value("acc", acc)
-                        hlog.value("f1", f1)
-                        hlog.value("bscore", bscore)
+
+                        hlog.value("val acc", acc)
+                        hlog.value("val f1", f1)
+                        hlog.value("val bscore", bscore)
                         best_f1 = max(best_f1, f1)
                         best_acc = max(best_acc, acc)
                         best_bleu = max(best_bleu, bscore)
@@ -162,12 +166,20 @@ def train(model, train_dataset, val_dataset, writer=None, references=None):
                         hlog.value("best_acc", best_acc)
                         hlog.value("best_f1", best_f1)
                         hlog.value("best_bleu", best_bleu)
+
+                        tacc, tf1, tval_loss, tbscore = validate(model, test_dataset, writer=writer, references=references)
+                        hlog.value("test acc", tacc)
+                        hlog.value("test f1", tf1)
+                        hlog.value("test bscore", tbscore)
                         if val_loss < best_loss:
                             best_loss = val_loss
                             tolarance = FLAGS.tolarance
                         else:
                             tolarance -= 1
                         hlog.value("best_loss", best_loss)
+                    model.train()
+        if FLAGS.one_shot:
+            break
 
     hlog.value("final_acc", acc)
     hlog.value("final_f1", f1)
@@ -191,10 +203,13 @@ def validate(model, val_dataset, vis=False, final=False, writer=None, references
     cur_references = []
     candidates = []
     with torch.no_grad():
-        for inp, out, lens in tqdm(val_loader):
+        for inp, out, finp, fout, lens in tqdm(val_loader):
+            torch.cuda.empty_cache()
             input = inp.to(DEVICE)
+            finput = finp.to(DEVICE)
             lengths = lens.to(DEVICE)
             pred, _ = model.sample(input,
+                                   finput,
                                    lens=lengths,
                                    temp=1.0,
                                    max_len=model.MAXLEN_Y,
@@ -202,7 +217,7 @@ def validate(model, val_dataset, vis=False, final=False, writer=None, references
                                    beam_size=FLAGS.beam_size * final,
                                    calc_score=False)
 
-            loss += model.pyx(input, out.to(DEVICE), lens=lengths).item() * input.shape[1]
+            loss += model.pyx(input, out.to(DEVICE), finput, fout.to(DEVICE), lens=lengths).item() * input.shape[1]
             for i, seq in enumerate(pred):
                 ref = out[:, i].numpy().tolist()
                 ref = eval_format(model.vocab_y, ref)
@@ -261,7 +276,7 @@ def swap_io(items):
     return [(y, x) for (x, y) in items]
 
 
-def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, train_x=None, train_y=None, unwanted=lambda x: False, temp=0.02):
+def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, train_items=None, unwanted=lambda x: False, temp=0.02):
     if aligner == "uniform":
         proj = np.ones((len(vocab_x), len(vocab_y)), dtype=np.float32)
     elif aligner == "random":
@@ -301,17 +316,25 @@ def tranlate_with_alignerv2(aligner, vocab_x, vocab_y, train_x=None, train_y=Non
     elif FLAGS.pipeline_align:
         align_model = PipelineAlign(len(vocab_x), len(vocab_y)).to(DEVICE)
         align_model.load_state_dict(torch.load(aligner)["model"])
+        align_model.do_train()
         with torch.no_grad():
-            for x, y in zip(train_x, train_y):
-                align_model(x, y)
+            idx = 0
+            for x_unk, y_unk, x_full, y_full in tqdm(train_items):
+                idx += 1
+                if idx % 50000 == 0:
+                    align_model.ground()
+                align_model(torch.tensor(x_unk).to(DEVICE).unsqueeze(1),
+                    torch.tensor(x_full).to(DEVICE).unsqueeze(1),
+                    torch.tensor(y_unk).to(DEVICE).unsqueeze(1),
+                    torch.tensor(y_full).to(DEVICE).unsqueeze(1))
+        align_model.do_eval()
         return align_model
     else:
-        print(sys.getsizeof(proj))
         return np.argmax(proj, axis=1)
 
 
 
-def tranlate_with_aligner(aligner, vocab_x, vocab_y, train_x=None, train_y=None, unwanted=lambda x: False, temp=0.02):
+def tranlate_with_aligner(aligner, vocab_x, vocab_y, train_items=None, unwanted=lambda x: False, temp=0.02):
     if FLAGS.pipeline_align:
         pass
     else:
@@ -330,13 +353,23 @@ def tranlate_with_aligner(aligner, vocab_x, vocab_y, train_x=None, train_y=None,
     if FLAGS.soft_align:
         return SoftAlign(proj/temp, requires_grad=FLAGS.learn_align).to(DEVICE)
     elif FLAGS.pipeline_align:
-        aligner = PipelineAlign(len(vocab_x), len(vocab_y)).to(DEVICE)
+        align_model = PipelineAlign(len(vocab_x), len(vocab_y)).to(DEVICE)
+        align_model.load_state_dict(torch.load(aligner)["model"])
+        align_model.do_train()
         with torch.no_grad():
-            for x, y in zip(train_x, train_y):
-                aligner(x, y)
-        return aligner
+            idx = 0
+            for x_unk, y_unk, x_full, y_full in tqdm(train_items):
+                idx += 1
+                if idx % 50000 == 0:
+                    align_model.ground()
+                align_model(torch.tensor(x_unk).to(DEVICE).unsqueeze(1),
+                    torch.tensor(x_full).to(DEVICE).unsqueeze(1),
+                    torch.tensor(y_unk).to(DEVICE).unsqueeze(1),
+                    torch.tensor(y_full).to(DEVICE).unsqueeze(1))
+
+        align_model.do_eval()
+        return align_model
     else:
-        print(sys.getsizeof(proj))
         return np.argmax(proj, axis=1)
 
 
@@ -389,9 +422,9 @@ def copy_translation_scan(vocab_x, vocab_y):
             proj[idx, idy] = 1
         return np.argmax(proj, axis=1)
 
-def copy_translation_translate(vocab_x, vocab_y, train_x=None, train_y=None):
+def copy_translation_translate(vocab_x, vocab_y, train_items=None):
     if FLAGS.aligner != "":
-        return tranlate_with_alignerv2(FLAGS.aligner, vocab_x, vocab_y, train_x=train_x, train_y=train_y)
+        return tranlate_with_alignerv2(FLAGS.aligner, vocab_x, vocab_y, train_items=train_items)
     else:
         proj = np.zeros((len(vocab_x), len(vocab_y)), dtype=np.float32)
         x_keys = list(vocab_x._contents.keys())
@@ -487,20 +520,42 @@ def main(argv):
             copy_translation = None
     elif FLAGS.TRANSLATE:
         data = {}
+        train_split = 0.98
         max_len_x, max_len_y = 0, 0
         count_x, count_y = Counter(), Counter()
 
-        for split in ("train", "dev", "test"):
+        splits = ("train", "val_oneshot") if FLAGS.one_shot else ("train", "val", "test")
+
+        for split in splits:
             split_data = []
-            if split == "train" and FLAGS.geca:
-                translate_file = FLAGS.data_file
+            if split == "train":
+                vocab_x.train = True
+                vocab_y.train = True
             else:
-                translate_file = FLAGS.data_file
+                vocab_x.train = False
+                vocab_y.train = False
+            if split == "train" and FLAGS.geca:
+                translate_file = f"{ROOT_FOLDER}/../data_lex/" + split + "_" +  FLAGS.data_file + "_tab.txt"
+            else:
+                translate_file = f"{ROOT_FOLDER}/../data_lex/" + split + "_" +  FLAGS.data_file + "_tab.txt"
 
             if FLAGS.lessdata and split == "train":
                 translate_file = translate_file.replace("TRANSLATE", "TRANSLATE/less") + f"_{FLAGS.seed}.tsv"
             else:
                 translate_file = translate_file
+
+            if FLAGS.pipeline_align and split == "train":
+                src_vocab_file = f"{ROOT_FOLDER}/../data_lex/alignments/{FLAGS.data_file}/pipeline.src.vocab"
+                trg_vocab_file = f"{ROOT_FOLDER}/../data_lex/alignments/{FLAGS.data_file}/pipeline.trg.vocab"
+                with open(src_vocab_file, 'r') as f:
+                    for line in f:
+                        vocab_x.add(line.split(" ")[1].strip())
+
+                with open(trg_vocab_file, 'r') as f:
+                    for line in f:
+                        vocab_y.add(line.split(" ")[1].strip())
+
+            print(translate_file)
 
             datalines = open(translate_file, "r").readlines()
 
@@ -509,29 +564,32 @@ def main(argv):
                 inp, out = (input.strip().split(" "), output.strip().split(" "))
                 max_len_x = max(len(inp), max_len_x)
                 max_len_y = max(len(out), max_len_y)
-                for t in inp:
-                    count_x[t] += 1
-                for t in out:
-                    count_y[t] += 1
+                if split == "train" and not FLAGS.pipeline_align:
+                    for t in inp:
+                        count_x[t] += 1
+                    for t in out:
+                        count_y[t] += 1
+
                 split_data.append((inp, out))
 
             data[split] = split_data
 
-        count_x = count_x.most_common()    # threshold to 10k words
-        count_y = count_y.most_common()    # threshold to 10k words
+        if not FLAGS.pipeline_align:
+            count_x = count_x.most_common(int(len(count_x) * 0.1))    # threshold to 10k words
+            count_y = count_y.most_common(int(len(count_y) * 0.1))    # threshold to 10k words
+            for (x, _) in count_x:
+                vocab_x.add(x)
+            for (y, _) in count_y:
+                vocab_y.add(y)
 
-        for (x, _) in count_x:
-            vocab_x.add(x)
-        for (y, _) in count_y:
-            vocab_y.add(y)
 
         edata = {}
         references = {}
         for (split, split_data) in data.items():
             esplit = []
             for (inp, out) in split_data:
-                (einp, eout) = encode_io((inp, out), vocab_x, vocab_y)
-                esplit.append((einp, eout))
+                (einp, eout, finp, fout) = encode_io((inp, out), vocab_x, vocab_y)
+                esplit.append((einp, eout, finp, fout))
                 sinp = " ".join(vocab_x.decode(einp))
                 if sinp in references:
                     references[sinp].append(out)
@@ -546,11 +604,16 @@ def main(argv):
         hlog.value("vocab_y len: ", len(vocab_y))
         hlog.value("split lengts: ", [(k, len(v)) for (k, v) in data.items()])
 
-        train_items = data["train"]
-        val_items = data["dev"]
-        test_items = data["test"]
+        if FLAGS.one_shot:
+            train_items = data["train"]
+            val_items = data["test"]
+        else:
+            train_items = data["train"]
+            val_items = data["val"]
+            test_items = data["test"]
+
         if FLAGS.copy:
-            copy_translation = copy_translation_translate(vocab_x, vocab_y, train_x=[d[0] for d in train_items], train_y=[d[1] for d in train_items])
+            copy_translation = copy_translation_translate(vocab_x, vocab_y, train_items=train_items)
         else:
             copy_translation = None
 
@@ -581,7 +644,7 @@ def main(argv):
         else:
             copy_translation = None
 
-        train_items, test_items = encode(study, vocab_x, vocab_y), encode(test,vocab_x, vocab_y)
+        train_items, test_items = encode(study, vocab_x, vocab_y), encode(test, vocab_x, vocab_y)
         val_items = test_items
 
         hlog.value("vocab_x\n", vocab_x)
@@ -614,15 +677,16 @@ def main(argv):
                       ).to(DEVICE)
         if copy_translation is not None:
             model.pyx.decoder.copy_translation = copy_translation
-
-        with hlog.task("train model"):
-            acc, f1, bscore = train(model, train_items, val_items, writer=writer, references=references)
     else:
         model = torch.load(FLAGS.load_model)
 
-    with hlog.task("train evaluation"):
-        validate(model, train_items, vis=False, references=references)
+    if not FLAGS.one_shot:
+        with hlog.task("train model"):
+            acc, f1, bscore = train(model, train_items, val_items, test_items, writer=writer, references=references)
 
+    # with hlog.task("train evaluation"):
+    #     validate(model, train_items, vis=False, references=references)
+    #
     with hlog.task("val evaluation"):
         validate(model, val_items, vis=True, references=references)
 
@@ -632,7 +696,7 @@ def main(argv):
     # with hlog.task("test evaluation (beam)"):
     #     validate(model, test_items, vis=False, final=True)
 
-    # torch.save(model, f"seed_{FLAGS.seed}_" + FLAGS.save_model)
+
 
 
 if __name__ == "__main__":

@@ -70,8 +70,8 @@ class Mutex(nn.Module):
             # self.qxy = None
         self.recorder = recorder
 
-    def forward(self, inp, out, lens=None, recorder=None):
-        return self.pyx(inp, out, lens=lens)
+    def forward(self, inp, out, finp, fout, lens=None, recorder=None):
+        return self.pyx(inp, out, finp, fout, lens=lens)
 
     def print_tokens(self, vocab, tokens):
         return [" ".join(eval_format(vocab, tokens[i])) for i in range(len(tokens))]

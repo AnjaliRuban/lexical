@@ -10,18 +10,28 @@ class Vocab(object):
 
     def __init__(self):
         self._contents = {}
+        self._unk_contents = {}
         self._rev_contents = {}
+        self._unk_rev_contents = {}
         self.add(self.PAD)
         self.add(self.SOS)
         self.add(self.EOS)
         self.add(self.COPY)
         self.add(self.UNK)
+        self.train=True
 
     def add(self, sym):
         if sym not in self._contents:
             i = len(self._contents)
             self._contents[sym] = i
             self._rev_contents[i] = sym
+        return self
+
+    def unk_add(self, sym):
+        if sym not in self._unk_contents:
+            i = len(self._contents) + len(self._unk_contents)
+            self._unk_contents[sym] = i
+            self._unk_rev_contents[i] = sym
         return self
 
     def merge(self, add_vocab):
@@ -38,13 +48,25 @@ class Vocab(object):
     def __len__(self):
         return len(self._contents)
 
+    def full_len(self):
+        return len(self._contents) + len(self._unk_contents)
+
     def encode(self, seq, unk=True):
+        seq = [s.lower() for s in seq]
         if unk:
             seq = [s if s in self else self.UNK for s in seq]
-        return [self[i] for i in seq]
+            e = [self[i] for i in seq]
+        else:
+            if self.train:
+                [self.unk_add(s) for s in seq if not s in self]
+            e = [self[i] if i in self else self._unk_contents[i] if i in self._unk_contents else self.unk() for i in seq]
+        return e
 
-    def decode(self, seq):
-        return [self._rev_contents[i] for i in seq]
+    def decode(self, seq, unk=True):
+        if unk==True:
+            return [self._rev_contents[i] for i in seq]
+        else:
+            return [self._rev_contents[i] if i in self._rev_contents else self._unk_rev_contents[i] for i in seq]
 
     def get(self, i):
         return self._rev_contents[i]
