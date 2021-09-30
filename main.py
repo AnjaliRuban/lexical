@@ -69,6 +69,7 @@ flags.DEFINE_bool("lessdata", False, "0.1 data for translate")
 flags.DEFINE_bool("learn_align", False, "learned lexicon projection matrix")
 flags.DEFINE_bool("one_shot", False, "learned lexicon projection matrix")
 flags.DEFINE_float("paug", 0.1, "augmentation ratio")
+flags.DEFINE_float("unk", 0.1, "unk ratio")
 flags.DEFINE_string("aug_file", "", "data source for augmentation")
 flags.DEFINE_string("data_file", "", "data source")
 flags.DEFINE_float("soft_temp", 0.2, "2 * temperature for soft lexicon")
@@ -575,8 +576,8 @@ def main(argv):
             data[split] = split_data
 
         if not FLAGS.pipeline_align:
-            count_x = count_x.most_common(int(len(count_x) * 0.1))    # threshold to 10k words
-            count_y = count_y.most_common(int(len(count_y) * 0.1))    # threshold to 10k words
+            count_x = count_x.most_common(int(len(count_x) * FLAGS.unk))    # threshold to 10k words
+            count_y = count_y.most_common(int(len(count_y) * FLAGS.unk))    # threshold to 10k words
             for (x, _) in count_x:
                 vocab_x.add(x)
             for (y, _) in count_y:
