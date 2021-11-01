@@ -11,10 +11,11 @@
 
 types=${1}
 name=${2}
+unk=${3}
 i=0
 lr=1.0
 warmup_steps=4000
-max_steps=1000000
+max_steps=30000
 home="../.."
 data="../../.."
 mkdir -p $data/results/$types
@@ -35,6 +36,7 @@ python3 -u $home/main.py \
 --warmup_steps ${warmup_steps} \
 --max_step ${max_steps} \
 --tolarance 10 \
+--unk ${unk} \
 --data_file ${types} \
 --save_model $data/results/$types/${name}_baseline_model.${i}.pth \
 --TRANSLATE > $data/results/$types/${name}_baseline_eval.${i}.out

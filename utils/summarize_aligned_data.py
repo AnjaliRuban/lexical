@@ -7,18 +7,22 @@ def main(data_file, aligner_file):
     data = None
     with open(data_file, "r") as f:
         data = f.read().splitlines()
-
+    print(len(data))
+    data = [d for d in data if d.split('|||')[0].strip() != "" and d.split('|||')[1].strip() != ""  and d.split('|||')[0].strip()[:4] != "CLD2" and len(d.split('|||')[0].strip().split(' '))/len(d.split('|||')[1].strip().split(' ')) < 2 and len(d.split('|||')[1].strip().split(' '))/len(d.split('|||')[0].strip().split(' ')) < 2]
+    print(len(data))
     word_adjacency = {}
     with open(aligner_file, "r") as f:
         for k, line in enumerate(f):
             input, output = data[k].split(SPLIT_TOK)
             input, output = input.strip().split(" "), output.strip().split(" ")
             alignments = line.strip().split(" ")
+            print(alignments)
+            print(output)
             for a in alignments:
                 if len(a) == 0: continue
                 i, j = a.split("-")
-                wi = input[int(i)]
-                wj = output[int(j)]
+                wi = input[int(i)-1]
+                wj = output[int(j)-1]
                 if wi in word_adjacency:
                     word_adjacency[wi].append(wj)
                 else:

@@ -93,6 +93,8 @@ class PipelineAlign(nn.Module):
 
     def do_eval(self):
         self.ground()
+        empty_xs = torch.where(self.lexicon_dense.sum(axis=1) == 0)[0]
+        empty_ys = np.where(self.lexicon_dense.sum(axis=0) == 0)[0]
         del self.lexicon_sparse
 
     def do_train(self):

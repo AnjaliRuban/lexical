@@ -10,7 +10,9 @@
 #SBATCH --array=0-4
 
 types=${1}
-i=4
+name=${2}
+unk=${3}
+i=0
 lr=1.0
 warmup_steps=4000
 max_steps=1000000
@@ -35,11 +37,12 @@ python -u  $home/main.py \
 --max_step ${max_steps} \
 --tolarance 10 \
 --copy \
+--unk ${unk} \
 --data_file ${types} \
 --pipeline_align \
 --aligner $data/data_lex/alignments/${types}/pipeline.align.pth \
---save_model $data/results/$types/pipeline_model.${i}.pth \
---TRANSLATE > $data/results/$types/pipeline_eval.${i}.out
+--save_model $data/results/$types/${name}_pipeline_model.${i}.pth \
+--TRANSLATE > $data/results/$types/${name}_pipeline_eval.${i}.out
 # --one_shot \
 # --TRANSLATE > $data/results/$types/pipeline_eval.test.out
 # --load_model $data/results/$types/pipeline_model.${i}.pth \
